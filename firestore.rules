@@ -1,0 +1,103 @@
+// hayda to block hayala hadan from reading aw writting bel database, fi kelel sections, user,events,tickets,trans
+
+
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myUid() {
+      return request.auth.uid;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(myUid())).data.role;
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && myRole() == role;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && myUid() == uid;
+    }
+
+
+
+
+
+
+    // hayde el section lal users, zabatta after doctor ibrahims email
+match /users/{uid} {
+  allow read: if isSignedIn();
+  allow create: if isOwner(uid) && request.resource.data.role == 'attendee';
+  allow update: if (isOwner(uid) || hasRole('admin')) &&
+    (hasRole('admin') || request.resource.data.role == resource.data.role) &&
+    (hasRole('admin') ||
+      (request.resource.data.points is number &&
+       request.resource.data.points >= 0 &&
+       (request.resource.data.points - resource.data.points) <= 1000 &&
+       (request.resource.data.points - resource.data.points) >= -500));
+  allow delete: if hasRole('admin');
+}
+
+
+
+
+
+    // hayda lal events
+    match /events/{eventId} {
+      allow read: if resource.data.status == 'published' || isSignedIn();
+      allow create: if hasRole('organizer') || hasRole('admin');
+      allow update, delete: if hasRole('admin') ||
+        (hasRole('organizer') && resource.data.organizerId == myUid());
+
+      match /ticketTypes/{ticketTypeId} {
+        allow read: if true;
+        allow write: if hasRole('admin') ||
+          (hasRole('organizer') &&
+            get(/databases/$(database)/documents/events/$(eventId)).data.organizerId == myUid());
+
+        // A ticket purchase needs to bump quantitySold by exactly one as
+        // part of the buyer's own transaction. Scoped tightly so a buyer
+        // can never touch price/name/quantityTotal or jump the count by
+        // more than one sale at a time.
+        allow update: if isSignedIn() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quantitySold']) &&
+          request.resource.data.quantitySold == resource.data.quantitySold + 1 &&
+          request.resource.data.quantitySold <= resource.data.quantityTotal;
+      }
+    }
+
+
+
+
+    // hayda lal tickets
+    match /tickets/{ticketId} {
+      allow read: if isSignedIn() &&
+        (resource.data.ownerId == myUid() || hasRole('organizer') || hasRole('staff') || hasRole('admin'));
+      allow create: if isSignedIn();
+      // Only staff/organizers/admins can update ticket status (check-in), or
+      // the Cloud Function service account in production.
+      allow update: if hasRole('staff') || hasRole('organizer') || hasRole('admin');
+      allow delete: if hasRole('admin');
+    }
+
+
+
+
+
+    // hayda lal transactions
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn() &&
+        (resource.data.userId == myUid() || hasRole('admin'));
+      allow create: if isSignedIn() && request.resource.data.userId == myUid();
+      allow update, delete: if hasRole('admin');
+    }
+  }
+}
